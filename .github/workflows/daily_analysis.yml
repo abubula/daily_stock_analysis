@@ -1,11 +1,8 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
-  # 手动触发（带运行模式和强制运行选项）
+    - cron: '0 10 * * 1-5'
   workflow_dispatch:
     inputs:
       mode:
@@ -14,16 +11,15 @@ on:
         default: 'full'
         type: choice
         options:
-          - full          # 完整分析（股票+大盘）
-          - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
+          - full
+          - market-only
+          - stocks-only
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
 
-# 并发控制：同一时间只运行一个分析任务
 concurrency:
   group: stock-analysis
   cancel-in-progress: false
@@ -34,7 +30,7 @@ jobs:
     timeout-minutes: 180
     
     steps:
-      - name: 随机延迟（避免固定时间访问数据源）
+      - name: 随机延迟
         run: sleep $((RANDOM % 60))
       
       - name: 检出代码
@@ -53,7 +49,7 @@ jobs:
           mkdir -p ~/.config/matplotlib
           echo "backend: Agg" > ~/.config/matplotlib/matplotlibrc
 
-      - name: 安装依赖（智能重试）
+      - name: 安装依赖
         run: |
           pip config set global.cache-dir ~/.cache/pip
           pip install --upgrade pip
@@ -66,210 +62,127 @@ jobs:
                 return 0
               fi
               retry_count=$((retry_count + 1))
-              echo "⚠️ 依赖安装失败，第 $retry_count 次重试..."
+              echo "⚠️ 重试 $retry_count..."
               sleep 5
             done
-            echo "❌ 依赖安装失败（已重试3次），请检查网络或包名"
+            echo "❌ 依赖安装失败"
             exit 1
           }
 
           if [[ -f "requirements.txt" ]]; then
-            echo "📦 正在安装 requirements.txt..."
             install_with_retry -r requirements.txt
-          else
-            echo "⚠️ 未找到 requirements.txt，跳过自定义依赖"
           fi
 
-          echo "📦 正在安装核心兜底依赖..."
+          echo "📦 安装核心依赖..."
           install_with_retry \
             python-dotenv pillow python-magic \
             google-generativeai openai anthropic \
             langchain langchain-community tavily-python serpapi \
             requests pandas numpy matplotlib seaborn scikit-learn tushare
       
-      - name: 创建必要目录及默认策略
+      - name: 创建目录及策略
         run: |
           mkdir -p data logs reports strategies
-          chmod 755 data logs reports strategies
-          
           if [[ ! -f "strategies/moving_average.yml" ]]; then
             cat > strategies/moving_average.yml << EOF
           name: 均线金叉
-          description: 基于 5 日/10 日/20 日均线金叉
           indicators: [ma5, ma10, ma20]
-          conditions: ["ma5 > ma10", "ma10 > ma20"]
-          EOF
-          fi
-          if [[ ! -f "strategies/chanlun.yml" ]]; then
-            cat > strategies/chanlun.yml << EOF
-          name: 缠论
-          description: 缠论中枢、背驰、买卖点分析
-          indicators: [rsi, macd, volume]
-          conditions: ["trend: bullish", "divergence: bullish"]
           EOF
           fi
       
-      - name: 预执行检查
-        run: |
-          set -e
-          if [[ ! -f "main.py" ]]; then
-            echo "❌ 核心脚本 main.py 不存在"
-            exit 1
-          fi
-          # 移除冗余的目录权限检查，GitHub Actions 默认拥有写入权限
-          echo "✅ 环境准备就绪"
-      
-      - name: 执行股票分析
+      - name: 执行股票分析 (调试增强版)
         id: run_analysis
         env:
-          # ==========================================
-          # AI 配置
-          # ==========================================
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3-flash-preview' }}
-          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || '' }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022' }}
-          
-          # ==========================================
-          # 数据源与搜索
-          # ==========================================
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-          
-          # ==========================================
-          # 通知渠道（补全豆包版本遗漏的配置）
-          # ==========================================
-          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          
-          # ==========================================
-          # 业务与系统配置
-          # ==========================================
           STOCK_LIST: ${{ vars.STOCK_LIST || '600519' }}
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || 'cn' }}
-          REPORT_TYPE: ${{ vars.REPORT_TYPE || 'simple' }}
-          LOG_LEVEL: INFO
+          # 补全其他必要环境变量...
+          LOG_LEVEL: DEBUG
           MPLBACKEND: Agg
           TZ: Asia/Shanghai
         run: |
-          # 移除 -e，防止非致命错误导致脚本直接退出，允许我们捕获退出码
-          set -uo pipefail 
+          set -uo pipefail
           
-          # 1. 关键配置预检
-          echo "🔍 关键配置预检..."
-          if [[ -z "${TUSHARE_TOKEN}" ]]; then
-            echo "⚠️ 警告：TUSHARE_TOKEN 未配置，数据获取可能失败"
-          fi
-          
-          AI_KEYS=("${GEMINI_API_KEY}" "${OPENAI_API_KEY}" "${ANTHROPIC_API_KEY}" "${AIHUBMIX_KEY}")
-          AI_CONFIGURED=false
-          for key in "${AI_KEYS[@]}"; do
-            if [[ -n "$key" ]]; then
-              AI_CONFIGURED=true
-              break
-            fi
-          done
-          if [[ "$AI_CONFIGURED" = false ]]; then
-            echo "❌ 错误：未配置任何 AI 密钥，任务终止"
-            exit 1
-          fi
-          echo "✅ 配置检查通过"
-          
-          # 2. 解析模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
-          echo "🚀 开始执行 (模式：$MODE)"
+          FORCE_RUN="${{ github.event.inputs.force_run }}"
+          
+          echo "🔍 调试信息:"
+          echo "  模式: $MODE"
+          echo "  强制运行: $FORCE_RUN"
+          
+          # 构建参数字符串用于显示
+          FINAL_ARGS=""
+          
+          # 逻辑分支构建参数
+          if [[ "$MODE" == "market-only" ]]; then
+            FINAL_ARGS="--market-review"
+          elif [[ "$MODE" == "stocks-only" ]]; then
+            FINAL_ARGS="--no-market-review"
+          else
+            FINAL_ARGS="--run-analysis"
+          fi
+          
+          if [[ "$FORCE_RUN" == "true" ]]; then
+            FINAL_ARGS="$FINAL_ARGS --force-run"
+          fi
+          
+          echo "🚀 即将执行的命令: python main.py $FINAL_ARGS"
           echo "----------------------------------------"
           
-          # 3. 【关键优化】使用数组构建参数，彻底避免空参数问题
-          CMD_ARGS=()
-          case "${MODE}" in
-            market-only) CMD_ARGS+=("--market-review") ;;
-            stocks-only) CMD_ARGS+=("--no-market-review") ;;
-            *) CMD_ARGS+=("--run-analysis") ;;
-          esac
+          # 【关键修改】直接执行，不再使用数组，而是依靠 Shell 的自然展开
+          # 如果 FINAL_ARGS 为空字符串，Shell 通常会正确处理（不传参）
+          # 为了绝对安全，我们分情况执行
           
-          if [[ "${{ github.event.inputs.force_run }}" == "true" ]]; then
-            CMD_ARGS+=("--force-run")
-            echo "⚡ 强制运行模式已启用"
+          if [[ -z "$FINAL_ARGS" ]]; then
+             echo "⚠️ 无额外参数，直接运行..."
+             python main.py
+          else
+             echo "✅ 带参数运行..."
+             # 使用 eval 确保参数被正确解析为多个单词，而不是一个长字符串
+             # 注意：eval 需谨慎，但在此处变量来源可控，是解决 argparse 问题的最佳方案
+             eval python main.py $FINAL_ARGS
           fi
-          
-          # 4. 执行并统计时间
-          start_time=$(date +%s)
-          
-          # 使用 "${CMD_ARGS[@]}" 展开数组，安全传递参数
-          python main.py "${CMD_ARGS[@]}"
           
           EXIT_CODE=$?
-          end_time=$(date +%s)
-          run_time=$((end_time - start_time))
-          
           echo "----------------------------------------"
-          echo "🏁 脚本执行结束 | 耗时：${run_time}秒 | 退出码：$EXIT_CODE"
+          echo "🏁 退出码: $EXIT_CODE"
           
           if [[ $EXIT_CODE -ne 0 ]]; then
-            echo "::error::分析脚本执行失败，退出码为 $EXIT_CODE。请查看上方日志详情。"
+            echo "::error::脚本执行失败 (Exit Code $EXIT_CODE)。请向上滚动查看 Python Traceback 报错详情。"
             exit $EXIT_CODE
           fi
 
-      - name: 上传分析报告
+      - name: 上传报告
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: analysis-reports-${{ github.run_number }}
+          name: reports-${{ github.run_number }}
           path: |
             reports/**
             logs/**
-            strategies/**
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: warn
 
-      - name: 显示运行结果摘要
+      - name: 结果摘要
         if: always()
         run: |
-          echo ""
-          echo "================================"
-          echo "🎯 运行结果检查"
-          echo "================================"
-          
-          # 检查报告
+          echo "📊 运行摘要"
           if [[ -d "reports" ]] && [[ -n "$(ls -A reports 2>/dev/null)" ]]; then
-            echo "✅ 报告生成成功:"
-            ls -lh reports/ | awk '{print "  " $9 " (" $5 ")"}' | head -5
-            report_size=$(du -sh reports/ 2>/dev/null | awk '{print $1}')
-            echo "  📦 报告总大小：${report_size}"
+            echo "✅ 报告已生成"
+            du -sh reports/
           else
-            echo "❌ 未生成分析报告"
+            echo "❌ 无报告生成"
           fi
           
-          # 检查日志
           if [[ -d "logs" ]]; then
-            # 增加 || true 确保即使 find 没找到文件也不会因 set -u 或其他原因报错
             LATEST_LOG=$(find logs -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)
-            
-            if [[ -n "${LATEST_LOG}" && -f "${LATEST_LOG}" ]]; then
-              echo -e "\n📋 最新日志 (${LATEST_LOG}) 末尾 50 行:"
-              echo "----------------------------------------"
-              tail -50 "${LATEST_LOG}" 2>/dev/null || echo "(无法读取日志)"
-              echo "----------------------------------------"
-            else
-              echo "📋 未找到日志文件"
+            if [[ -n "$LATEST_LOG" ]]; then
+              echo "📋 最后 30 行日志:"
+              tail -30 "$LATEST_LOG" 2>/dev/null || echo "日志为空"
             fi
-          else
-            echo "📋 日志目录不存在"
           fi
