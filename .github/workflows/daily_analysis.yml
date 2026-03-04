@@ -65,7 +65,6 @@ jobs:
               echo "⚠️ 重试 $retry_count..."
               sleep 5
             done
-            echo "❌ 依赖安装失败"
             exit 1
           }
 
@@ -80,9 +79,13 @@ jobs:
             langchain langchain-community tavily-python serpapi \
             requests pandas numpy matplotlib seaborn scikit-learn tushare
       
-      - name: 创建目录及策略
+      - name: 创建目录及策略 (确保目录存在)
         run: |
           mkdir -p data logs reports strategies
+          # 预创建一个空日志，防止后续步骤报 "No files found"
+          touch logs/initialization.log
+          echo "初始化完成" >> logs/initialization.log
+          
           if [[ ! -f "strategies/moving_average.yml" ]]; then
             cat > strategies/moving_average.yml << EOF
           name: 均线金叉
@@ -90,7 +93,16 @@ jobs:
           EOF
           fi
       
-      - name: 执行股票分析 (调试增强版)
+      - name: 🔍 诊断：查看脚本支持的参数
+        run: |
+          echo "=========================================="
+          echo "🔍 正在探测 main.py 支持的参数..."
+          echo "=========================================="
+          # 这一步至关重要！它会告诉我们要传什么参数才不会报 exit code 2
+          python main.py --help || echo "⚠️ --help 也失败了，说明脚本有严重导入错误"
+          echo "=========================================="
+
+      - name: 执行股票分析
         id: run_analysis
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -101,7 +113,6 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           STOCK_LIST: ${{ vars.STOCK_LIST || '600519' }}
-          # 补全其他必要环境变量...
           LOG_LEVEL: DEBUG
           MPLBACKEND: Agg
           TZ: Asia/Shanghai
@@ -111,78 +122,72 @@ jobs:
           MODE="${{ github.event.inputs.mode || 'full' }}"
           FORCE_RUN="${{ github.event.inputs.force_run }}"
           
-          echo "🔍 调试信息:"
-          echo "  模式: $MODE"
-          echo "  强制运行: $FORCE_RUN"
+          echo "🚀 开始执行..."
+          echo "模式：$MODE"
+          echo "强制运行：$FORCE_RUN"
           
-          # 构建参数字符串用于显示
-          FINAL_ARGS=""
+          # 构造参数字符串
+          ARGS=""
           
-          # 逻辑分支构建参数
+          # 根据常见习惯尝试匹配，如果上面的 --help 显示不同，你需要手动修改这里
           if [[ "$MODE" == "market-only" ]]; then
-            FINAL_ARGS="--market-review"
+            ARGS="--market-review"
           elif [[ "$MODE" == "stocks-only" ]]; then
-            FINAL_ARGS="--no-market-review"
+            ARGS="--no-market-review"
           else
-            FINAL_ARGS="--run-analysis"
+            ARGS="--run-analysis"
           fi
           
           if [[ "$FORCE_RUN" == "true" ]]; then
-            FINAL_ARGS="$FINAL_ARGS --force-run"
+            ARGS="$ARGS --force-run"
           fi
           
-          echo "🚀 即将执行的命令: python main.py $FINAL_ARGS"
+          echo "📝 最终拼接的参数：[$ARGS]"
           echo "----------------------------------------"
           
-          # 【关键修改】直接执行，不再使用数组，而是依靠 Shell 的自然展开
-          # 如果 FINAL_ARGS 为空字符串，Shell 通常会正确处理（不传参）
-          # 为了绝对安全，我们分情况执行
-          
-          if [[ -z "$FINAL_ARGS" ]]; then
-             echo "⚠️ 无额外参数，直接运行..."
-             python main.py
+          # 【关键策略】使用 eval 执行，确保参数被正确拆分
+          # 如果 ARGS 为空，eval python main.py 等同于 python main.py
+          if [[ -z "$ARGS" ]]; then
+            echo "⚡ 无额外参数，直接运行..."
+            python main.py
           else
-             echo "✅ 带参数运行..."
-             # 使用 eval 确保参数被正确解析为多个单词，而不是一个长字符串
-             # 注意：eval 需谨慎，但在此处变量来源可控，是解决 argparse 问题的最佳方案
-             eval python main.py $FINAL_ARGS
+            echo "⚡ 带参数运行：python main.py $ARGS"
+            eval python main.py $ARGS
           fi
           
           EXIT_CODE=$?
           echo "----------------------------------------"
-          echo "🏁 退出码: $EXIT_CODE"
+          echo "🏁 执行结束，退出码：$EXIT_CODE"
+          
+          # 记录退出码到日志文件，方便后续排查
+          echo "Script Exit Code: $EXIT_CODE" >> logs/execution_status.log
           
           if [[ $EXIT_CODE -ne 0 ]]; then
-            echo "::error::脚本执行失败 (Exit Code $EXIT_CODE)。请向上滚动查看 Python Traceback 报错详情。"
+            echo "::error::脚本执行失败 (Exit Code $EXIT_CODE)。请查看上方 '诊断：查看脚本支持的参数' 和本步骤的报错详情。"
+            # 不要立即 exit 1，让后续步骤有机会上传可能产生的部分日志
+            # 但为了让 GitHub Actions 标记为失败，最后还是要退出的
+            # 这里我们先标记，在最后一步统一处理或者直接退出
             exit $EXIT_CODE
           fi
 
-      - name: 上传报告
+      - name: 上传分析报告
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: reports-${{ github.run_number }}
+          name: analysis-reports-${{ github.run_number }}
           path: |
             reports/**
             logs/**
+            strategies/**
           retention-days: 7
-          if-no-files-found: warn
+          # 即使没有报告，只要有日志（我们预创建了）就不会报 No files found
+          if-no-files-found: warn 
 
       - name: 结果摘要
         if: always()
         run: |
           echo "📊 运行摘要"
-          if [[ -d "reports" ]] && [[ -n "$(ls -A reports 2>/dev/null)" ]]; then
-            echo "✅ 报告已生成"
-            du -sh reports/
-          else
-            echo "❌ 无报告生成"
-          fi
-          
-          if [[ -d "logs" ]]; then
-            LATEST_LOG=$(find logs -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)
-            if [[ -n "$LATEST_LOG" ]]; then
-              echo "📋 最后 30 行日志:"
-              tail -30 "$LATEST_LOG" 2>/dev/null || echo "日志为空"
-            fi
+          ls -la logs/
+          if [[ -f "logs/execution_status.log" ]]; then
+            cat logs/execution_status.log
           fi
