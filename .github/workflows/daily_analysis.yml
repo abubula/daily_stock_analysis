@@ -232,18 +232,24 @@ jobs:
       - name: 显示运行结果
         if: always()
         run: |
-          echo ""
-          echo "=========================================="
-          echo "📊 分析完成"
-          echo "=========================================="
-          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
-            echo "生成的报告:"
-            ls -la reports/
-          else
-            echo "⚠️ 未生成报告文件"
-          fi
-          echo ""
-          if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
-            echo "📜 最近日志（最后 30 行）:"
-            tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
-          fi
+  echo ""
+  echo "================================"
+  echo "🎯 运行结果检查"
+  echo "================================"
+  # 检查 AI 配置是否正确
+  echo "🔍 检查 AI 配置..."
+  echo "AIHUBMIX_KEY 已配置: ${{ secrets.AIHUBMIX_KEY != '' }}"
+  echo "OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}"
+  # 检查报告和日志
+  if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
+    echo "✅ 生成的报告:"
+    ls -la reports/
+  else
+    echo "❌ 未生成报告文件"
+  fi
+  if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
+    echo "📋 最近日志 (最后 50 行):"
+    tail -50 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+  else
+    echo "📋 无今日日志"
+  fi
